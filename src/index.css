@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    @apply bg-gray-900 text-gray-100;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-gray-800/90 rounded-2xl shadow-lg border border-gray-700/80 p-4 backdrop-blur-sm;
+  }
+  .card-anuo {
+    @apply card relative overflow-hidden;
+    background: linear-gradient(135deg, rgba(31, 41, 55, 0.95) 0%, rgba(17, 24, 39, 0.98) 100%);
+  }
+  .card-anuo::before {
+    content: '';
+    @apply absolute top-0 left-0 right-0 h-0.5;
+    background: linear-gradient(90deg, transparent, #f97316, #eab308, #f97316, transparent);
+  }
+  .nuo-speech {
+    @apply relative bg-gray-700/60 rounded-xl px-3 py-2 text-xs text-gray-300 italic border-l-2 border-primary-500;
+  }
+  .nuo-badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold;
+    background: linear-gradient(135deg, rgba(249, 115, 22, 0.2), rgba(234, 179, 8, 0.15));
+    @apply text-primary-400 border border-primary-500/30;
+  }
+  .app-header {
+    @apply text-center py-3 mb-1;
+    background: linear-gradient(180deg, rgba(249, 115, 22, 0.08) 0%, transparent 100%);
+  }
+  .btn-primary {
+    @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-xl px-4 py-2 font-bold shadow-md shadow-primary-500/20 hover:from-primary-400 hover:to-primary-500 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100;
+  }
+  .btn-secondary {
+    @apply bg-gray-700 text-gray-200 rounded-xl px-4 py-2 font-medium hover:bg-gray-600 active:bg-gray-500 transition-colors;
+  }
+  .input-field {
+    @apply w-full bg-gray-700/80 border border-gray-600 rounded-xl px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/60 focus:border-transparent transition-all;
+  }
+  .section-title {
+    @apply text-sm font-bold text-gray-300 mb-2;
+  }
+  .cartoon-icon {
+    @apply inline-block object-contain select-none;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+  }
+  .skeleton {
+    @apply bg-gray-700 rounded-xl animate-pulse;
+  }
+}

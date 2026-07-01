@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.zeabur.app/zeabur.json",
+  "build": {
+    "command": "npm run build",
+    "outputDirectory": "dist"
+  },
+  "start": {
+    "command": "node server.js"
+  },
+  "staticAssets": [],
+  "envs": {
+    "PORT": {
+      "description": "服务器监听端口，Zeabur 会自动注入",
+      "default": "3000"
+    },
+    "NODE_ENV": {
+      "description": "运行环境",
+      "default": "production"
+    }
+  }
+}
