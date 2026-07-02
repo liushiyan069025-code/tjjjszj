@@ -16,9 +16,7 @@ function getSettings(): AppSettings {
 
 /** 检查 API Key 是否已配置 */
 function ensureApiKey(settings: AppSettings): void {
-  if (!settings.apiKey || !settings.apiKey.trim()) {
-    throw new Error('那我问你，API Key 呢？先去「诺神配置」填上啊，听见没有！');
-  }
+  validateApiSettings(settings);
 }
 
 /** 清洗 API Key：去除前后空格（粘贴时常见问题） */
@@ -26,29 +24,107 @@ function cleanApiKey(key: string): string {
   return key.trim();
 }
 
+/** 判断字符串是否像 API Key（误填到 Base URL 时） */
+function looksLikeApiKey(value: string): boolean {
+  const v = value.trim();
+  return /^sk-/i.test(v) || /^sk\.[a-z0-9_-]+$/i.test(v);
+}
+
+/** 校验 Base URL 与 Key 未填反、格式合法 */
+function validateApiSettings(settings: AppSettings): void {
+  const baseUrl = settings.baseUrl.trim();
+  const apiKey = cleanApiKey(settings.apiKey);
+
+  if (!apiKey) {
+    throw new Error('那我问你，API Key 呢？先去「诺神配置」填上啊，听见没有！');
+  }
+  if (looksLikeApiKey(baseUrl)) {
+    throw new Error(
+      '「API 地址」不能填 Token（sk-...）。\n' +
+      '公司网关：Key 填 API Key 框，网关根地址（https://...）填 API 地址框。'
+    );
+  }
+  if (/^https?:\/\//i.test(apiKey) || apiKey.includes('maas.aliyuncs.com') || apiKey.includes('dashscope')) {
+    throw new Error('API Key 和 API 地址可能填反了，请检查两个输入框。');
+  }
+  if (!baseUrl || !baseUrl.includes('.')) {
+    throw new Error('API 地址无效，请填完整 https:// 开头的百炼 OpenAI 兼容地址。');
+  }
+}
+
 /** 构建目标 URL */
 function buildTargetUrl(settings: AppSettings): string {
-  let baseUrl = settings.baseUrl.replace(/\/+$/, '');
+  validateApiSettings(settings);
 
-  // 智能修正：阿里云 DashScope 根域名缺少 /compatible-mode 路径时自动补全
-  // 正确的 OpenAI 兼容端点：https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-  // 若用户只填 https://dashscope.aliyuncs.com，请求会命中网关返回 405 HTML 错误页
-  if (baseUrl.includes('dashscope.aliyuncs.com') && !baseUrl.includes('compatible-mode')) {
+  let baseUrl = settings.baseUrl.trim().replace(/\/+$/, '');
+
+  // 仅对域名类地址补全 https://；禁止把 sk- Key 当成 URL
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    if (looksLikeApiKey(baseUrl)) {
+      throw new Error('API 地址不能是 API Key，请填公司网关 https://... 根路径');
+    }
+    baseUrl = `https://${baseUrl}`;
+  }
+
+  // IT 文档若给出完整 chat 端点，直接沿用（公司网关常见）
+  if (/\/chat\/completions\/?$/i.test(baseUrl)) {
+    console.log('[AI] 请求目标 URL:', baseUrl);
+    return baseUrl;
+  }
+
+  const isDashScope = baseUrl.includes('dashscope.aliyuncs.com');
+  const isWorkspaceMaas = baseUrl.includes('maas.aliyuncs.com');
+
+  // 阿里云公共 DashScope：根域名缺少 /compatible-mode 时自动补全
+  if (isDashScope && !baseUrl.includes('compatible-mode')) {
     baseUrl = `${baseUrl}/compatible-mode`;
     console.warn('[AI] 检测到 DashScope baseUrl 缺少 /compatible-mode 路径，已自动补全:', baseUrl);
   }
 
-  // 智能修正：非 DashScope 的自定义网关（如企业内部 LLM 网关）通常不需要 /compatible-mode 前缀
-  // 若用户照搬 DashScope 格式填了 /compatible-mode，但域名不是 dashscope.aliyuncs.com，
-  // 则去掉 /compatible-mode，避免拼接出 .../compatible-mode/v1/chat/completions 导致 404
-  if (!baseUrl.includes('dashscope.aliyuncs.com') && baseUrl.includes('/compatible-mode')) {
-    baseUrl = baseUrl.replace(/\/compatible-mode$/i, '');
-    console.warn('[AI] 检测到自定义网关 baseUrl 含有 /compatible-mode 路径（非 DashScope），已自动移除:', baseUrl);
+  // 不再自动删除公司网关 URL 中的 /compatible-mode（删错会导致 404/405）
+
+  let targetUrl: string;
+  if (settings.apiType === 'anthropic') {
+    targetUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/messages` : `${baseUrl}/v1/messages`;
+  } else if (baseUrl.endsWith('/compatible-mode/v1')) {
+    targetUrl = `${baseUrl}/chat/completions`;
+  } else if (baseUrl.endsWith('/compatible-mode')) {
+    targetUrl = `${baseUrl}/v1/chat/completions`;
+  } else if (baseUrl.endsWith('/v1')) {
+    targetUrl = `${baseUrl}/chat/completions`;
+  } else if (/\/v\d+\/?$/i.test(baseUrl)) {
+    // 如 /api/v1、/openai/v2
+    targetUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  } else {
+    targetUrl = `${baseUrl}/v1/chat/completions`;
   }
 
-  return settings.apiType === 'anthropic'
-    ? `${baseUrl}/v1/messages`
-    : `${baseUrl}/v1/chat/completions`;
+  console.log('[AI] 请求目标 URL:', targetUrl);
+  return targetUrl;
+}
+
+/** 是否 qwen 系模型（仅这类模型附加 enable_thinking，避免公司网关因未知字段拒收） */
+function isQwenLikeModel(model: string): boolean {
+  return /qwen/i.test(model);
+}
+
+/** OpenAI 兼容请求体公共字段 */
+function openAICompatBody(
+  settings: AppSettings,
+  messages: unknown[],
+  maxTokens: number,
+  stream: boolean
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: settings.model,
+    max_tokens: maxTokens,
+    messages,
+  };
+  if (isQwenLikeModel(settings.model)) {
+    body.enable_thinking = false;
+  }
+  if (stream) body.stream = true;
+  return body;
 }
 
 /** 构建非流式请求体 */
@@ -68,17 +144,10 @@ function buildRequestBody(
       ...(stream ? { stream: true } : {}),
     });
   }
-  return JSON.stringify({
-    model: settings.model,
-    max_tokens: maxTokens,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
-    // 禁用流式思考（兼容 qwen 等推理模型，确保输出到 content 而非 reasoning_content）
-    enable_thinking: false,
-    ...(stream ? { stream: true } : {}),
-  });
+  return JSON.stringify(openAICompatBody(settings, [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userMessage },
+  ], maxTokens, stream));
 }
 
 /** 构建带图片的请求体（Vision） */
@@ -110,24 +179,19 @@ function buildVisionRequestBody(
     });
   }
   // OpenAI 格式
-  return JSON.stringify({
-    model: settings.model,
-    max_tokens: maxTokens,
-    enable_thinking: false,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: imageBase64 },
-          },
-          { type: 'text', text: textPrompt },
-        ],
-      },
-    ],
-  });
+  return JSON.stringify(openAICompatBody(settings, [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: { url: imageBase64 },
+        },
+        { type: 'text', text: textPrompt },
+      ],
+    },
+  ], maxTokens, false));
 }
 
 /** 清洗上游错误文本：HTML 错误页 → 简洁提示 */
@@ -142,6 +206,33 @@ function sanitizeUpstreamError(text: string): string {
     return `上游返回 HTML 错误页（非 JSON）。${code ? `页面标题: ${code}。` : ''}请检查 Base URL 路径是否正确，例如阿里云 DashScope 需填 https://dashscope.aliyuncs.com/compatible-mode`;
   }
   return text;
+}
+
+/** 解析代理错误响应 */
+async function parseProxyError(resp: Response, targetUrl: string): Promise<string> {
+  let errorMsg = `API 请求失败 (${resp.status})`;
+  try {
+    const errorData = await resp.json();
+    if (errorData.error) {
+      errorMsg = errorData.error;
+      if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
+    }
+  } catch {
+    const text = await resp.text();
+    if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
+  }
+  if (resp.status === 404) {
+    errorMsg += `\n实际请求: ${targetUrl}`;
+    errorMsg += `\n请核对 API 地址是否填到 /v1（如 https://网关域名/xxx/v1），或粘贴 IT 给的含 chat/completions 的完整 URL。`;
+  }
+  if (resp.status === 405) {
+    errorMsg += `\n实际请求: ${targetUrl}`;
+    errorMsg += `\n405 = 该路径不接受 POST，通常是 API 地址路径不对。请向 IT 确认 OpenAI 兼容 chat 接口完整路径，可尝试：`;
+    errorMsg += `\n1) 地址填到 /v1，如 https://网关/.../v1`;
+    errorMsg += `\n2) 若文档含 compatible-mode，保留完整路径，如 .../compatible-mode/v1`;
+    errorMsg += `\n3) 或直接粘贴完整 URL：.../chat/completions`;
+  }
+  return errorMsg;
 }
 
 /** 解析非流式响应 */
@@ -206,18 +297,7 @@ async function callAI(
   });
 
   if (!resp.ok) {
-    let errorMsg = `API 请求失败 (${resp.status})`;
-    try {
-      const errorData = await resp.json();
-      if (errorData.error) {
-        errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
-      }
-    } catch {
-      const text = await resp.text();
-      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
-    }
-    throw new Error(errorMsg);
+    throw new Error(await parseProxyError(resp, targetUrl));
   }
 
   // 先以文本读取，便于调试
@@ -263,18 +343,7 @@ export async function callAIStream(
   });
 
   if (!resp.ok) {
-    let errorMsg = `API 请求失败 (${resp.status})`;
-    try {
-      const errorData = await resp.json();
-      if (errorData.error) {
-        errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
-      }
-    } catch {
-      const text = await resp.text();
-      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
-    }
-    throw new Error(errorMsg);
+    throw new Error(await parseProxyError(resp, targetUrl));
   }
 
   return readSSEStream(resp, settings.apiType, onChunk);
@@ -611,18 +680,7 @@ export async function recognizeFoodImage(imageBase64: string): Promise<MealResul
   });
 
   if (!resp.ok) {
-    let errorMsg = `API 请求失败 (${resp.status})`;
-    try {
-      const errorData = await resp.json();
-      if (errorData.error) {
-        errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
-      }
-    } catch {
-      const text = await resp.text();
-      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
-    }
-    throw new Error(errorMsg);
+    throw new Error(await parseProxyError(resp, targetUrl));
   }
 
   const data = await resp.json();

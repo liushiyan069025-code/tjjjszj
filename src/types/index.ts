@@ -226,21 +226,96 @@ export interface AppSettings {
 /** 默认设置（阿里云百炼 DashScope，国内可直接访问，无需翻墙） */
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
-  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode',
-  model: 'qwen-vl-max',
+  baseUrl:
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_GATEWAY_URL) ||
+    'https://dashscope.aliyuncs.com/compatible-mode',
+  model:
+    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_MODEL) ||
+    'qwen-vl-max',
   apiType: 'openai',
 };
 
 /** localStorage key */
 const SETTINGS_KEY = 'diet_app_settings';
 
-/** 加载设置 */
+/** 判断字符串是否像 API Key */
+export function looksLikeApiKey(value: string): boolean {
+  const v = value.trim();
+  return /^sk-/i.test(v) || /^sk\.[a-z0-9_-]+$/i.test(v);
+}
+
+/** 判断字符串是否像 Base URL（含公司网关域名） */
+export function looksLikeBaseUrl(value: string): boolean {
+  const v = value.trim();
+  if (!v || looksLikeApiKey(v)) return false;
+  if (/^https?:\/\//i.test(v)) return true;
+  // 无协议但像域名：gateway.company.com 或 gateway.company.com/v1
+  return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}/i.test(v) || v.includes('://');
+}
+
+/**
+ * 修复常见误填：Key 填进 Base URL、两框填反等。
+ * 公司网关场景下 IT 常只发 Token，用户容易整段粘到「API 地址」。
+ */
+export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettings; repaired: string[] } {
+  const settings: AppSettings = {
+    ...DEFAULT_SETTINGS,
+    ...raw,
+    apiKey: String(raw.apiKey ?? '').trim(),
+    baseUrl: String(raw.baseUrl ?? '').trim(),
+    model: String(raw.model ?? DEFAULT_SETTINGS.model).trim(),
+    apiType: raw.apiType === 'anthropic' ? 'anthropic' : 'openai',
+  };
+  const repaired: string[] = [];
+
+  const { baseUrl, apiKey } = settings;
+
+  // 两框填反：地址框是 sk-，Key 框是 https://...
+  if (looksLikeApiKey(baseUrl) && looksLikeBaseUrl(apiKey)) {
+    settings.baseUrl = apiKey;
+    settings.apiKey = baseUrl;
+    repaired.push('已自动纠正：API Key 与 API 地址填反了，请确认后点「保存设置」。');
+    return { settings, repaired };
+  }
+
+  // 只把 Token 粘进了「API 地址」，Key 框为空
+  if (looksLikeApiKey(baseUrl) && !apiKey) {
+    settings.apiKey = baseUrl;
+    settings.baseUrl = DEFAULT_SETTINGS.baseUrl;
+    repaired.push(
+      '已自动纠正：Token 不应放在「API 地址」。\n' +
+      '请在「API 地址」填写公司网关根地址（https://...），然后点「保存设置」。'
+    );
+    return { settings, repaired };
+  }
+
+  return { settings, repaired };
+}
+
+/** 加载设置（含自动修复误填） */
 export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const { settings, repaired } = repairSettings(JSON.parse(raw));
+      if (repaired.length) saveSettings(settings);
+      return settings;
+    }
   } catch { /* ignore */ }
   return { ...DEFAULT_SETTINGS };
+}
+
+/** 加载设置并返回修复提示（供 UI 展示） */
+export function loadSettingsWithRepairNotice(): { settings: AppSettings; repaired: string[] } {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const { settings, repaired } = repairSettings(JSON.parse(raw));
+      if (repaired.length) saveSettings(settings);
+      return { settings, repaired };
+    }
+  } catch { /* ignore */ }
+  return { settings: { ...DEFAULT_SETTINGS }, repaired: [] };
 }
 
 /** 保存设置 */

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import type { UserProfile, NutritionGoal, ActivityLevel, AppSettings, ApiType, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise } from '../types';
-import { ACTIVITY_FACTORS, DEFAULT_SETTINGS, loadSettings, saveSettings, TRAINING_STYLES, SPLIT_TYPES, WEEKDAY_LABELS } from '../types';
+import { ACTIVITY_FACTORS, DEFAULT_SETTINGS, loadSettingsWithRepairNotice, saveSettings, looksLikeApiKey, TRAINING_STYLES, SPLIT_TYPES, WEEKDAY_LABELS } from '../types';
 import { calcBMI, calcBMR, calcTDEE, daysUntilTarget, genId, calcDayTotalCalories, calcDayStrengthCalories, calcCardioCalories, calcDayDuration } from '../utils/calculations';
 import { generateNutritionGoal, generateWorkoutPlan } from '../services/aiService';
 import { CartoonIcon, SectionHeading } from '../components/CartoonIcon';
@@ -28,6 +28,7 @@ interface ProfileTabProps {
 export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goal, setGoal, workoutPlan, setWorkoutPlan }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [settingsError, setSettingsError] = useState('');
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showKey, setShowKey] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
@@ -41,23 +42,76 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
   const [workoutCardio, setWorkoutCardio] = useState(true);
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
 
-  // 加载已保存的设置
+  // 加载已保存的设置（自动修复 Key/地址填反）
   useEffect(() => {
-    setSettings(loadSettings());
+    const { settings: loaded, repaired } = loadSettingsWithRepairNotice();
+    setSettings(loaded);
+    if (repaired.length) setSettingsError(repaired.join('\n'));
   }, []);
+
+  const normalizeSettings = (s: AppSettings) => {
+    const normalized = {
+      ...s,
+      apiKey: s.apiKey.trim(),
+      baseUrl: s.baseUrl.trim(),
+      model: s.model.trim(),
+    };
+    if (looksLikeApiKey(normalized.baseUrl)) {
+      throw new Error(
+        '「API 地址」不能填 Token！\n' +
+        '• API Key：填公司网关给的 sk-...\n' +
+        '• API 地址：填公司网关根地址，如 https://ai-gateway.xxx.com 或 .../v1\n' +
+        '（你现在地址框里是 Key，所以会报 Failed to parse URL from sk-...）'
+      );
+    }
+    if (/^https?:\/\//i.test(normalized.apiKey) || normalized.apiKey.includes('maas.aliyuncs.com')) {
+      throw new Error('API Key 和 API 地址填反了：Key 框应是 sk-...，地址框应是 https://...');
+    }
+    if (!normalized.baseUrl) {
+      throw new Error('请填写公司网关 API 地址（https:// 开头），向 IT 索取 OpenAI 兼容网关根路径。');
+    }
+    return normalized;
+  };
 
   // 保存设置
   const handleSaveSettings = () => {
-    saveSettings(settings);
-    setSettingsSaved(true);
-    setTimeout(() => setSettingsSaved(false), 2000);
+    try {
+      setSettingsError('');
+      const normalized = normalizeSettings(settings);
+      setSettings(normalized);
+      saveSettings(normalized);
+      setSettingsSaved(true);
+      setTimeout(() => setSettingsSaved(false), 2000);
+    } catch (e: any) {
+      setSettingsError(e.message || '配置无效');
+    }
+  };
+
+  /** 调用 AI 前确保使用当前表单配置（写入 localStorage） */
+  const persistSettingsForAI = () => {
+    const normalized = normalizeSettings(settings);
+    saveSettings(normalized);
+    return normalized;
   };
 
   // 恢复默认
   const handleResetSettings = () => {
+    setSettingsError('');
     const def = { ...DEFAULT_SETTINGS };
     setSettings(def);
     saveSettings(def);
+  };
+
+  /** 清空 localStorage 中的错误配置 */
+  const handleClearBadConfig = () => {
+    setSettingsError('');
+    const kept = {
+      ...DEFAULT_SETTINGS,
+      apiKey: looksLikeApiKey(settings.baseUrl) ? settings.baseUrl.trim() : settings.apiKey.trim(),
+    };
+    setSettings(kept);
+    saveSettings(kept);
+    setSettingsError('已清空错误地址。请在「API 地址」填公司网关 https://...，再保存。');
   };
 
   const bmi = calcBMI(profile.weight, profile.height);
@@ -69,6 +123,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
     setLoading(true);
     setError('');
     try {
+      persistSettingsForAI();
       const result = await generateNutritionGoal(profile);
       setGoal(result);
     } catch (e: any) {
@@ -87,6 +142,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
     setWorkoutLoading(true);
     setWorkoutError('');
     try {
+      persistSettingsForAI();
       const result = await generateWorkoutPlan(profile, workoutDays, workoutStyle, workoutSplit, workoutCardio);
       setWorkoutPlan(result);
       setExpandedDay(result.days[0]?.id || null);
@@ -314,7 +370,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           </button>
         </div>
 
-        {error && <p className="text-xs text-red-400">{error}</p>}
+        {error && <p className="text-xs text-red-400 whitespace-pre-wrap break-words">{error}</p>}
 
         {loading ? (
           <SkeletonCard />
@@ -364,7 +420,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           </button>
         </div>
 
-        {workoutError && <p className="text-xs text-red-400">{workoutError}</p>}
+        {workoutError && <p className="text-xs text-red-400 whitespace-pre-wrap break-words">{workoutError}</p>}
 
         {/* 训练偏好设置 */}
         <div className="space-y-2.5">
@@ -799,11 +855,16 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             value={settings.baseUrl}
             onChange={(e) => setSettings((prev) => ({ ...prev, baseUrl: e.target.value }))}
             className="input-field mt-1"
-            placeholder={settings.apiType === 'openai' ? 'https://dashscope.aliyuncs.com/compatible-mode' : 'https://api.anthropic.com'}
+            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/compatible-mode/v1' : 'https://api.anthropic.com'}
           />
-          {settings.apiType === 'openai' && (
+          {looksLikeApiKey(settings.baseUrl) && (
+            <p className="text-[10px] text-red-400 mt-1 leading-relaxed">
+              当前「API 地址」是 Token（{settings.baseUrl.slice(0, 12)}...），不是 URL。请改填公司网关地址。
+            </p>
+          )}
+          {settings.apiType === 'openai' && !looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              国内推荐：阿里云百炼 <span className="text-gray-400">dashscope.aliyuncs.com/compatible-mode</span>、DeepSeek <span className="text-gray-400">api.deepseek.com</span>、智谱 <span className="text-gray-400">open.bigmodel.cn/api/paas/v4</span>，均无需翻墙
+              <span className="text-gray-400">申通 LLM 网关</span>：地址填 <span className="text-gray-400">https://devops-llmgateway.sto.cn/compatible-mode/v1</span>（须保留 compatible-mode，勿只填域名）。Token 填 API Key，模型问 IT。
             </p>
           )}
         </div>
@@ -820,7 +881,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           />
           {settings.apiType === 'openai' && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              阿里云百炼：qwen-vl-max（识图）/ qwen-plus（纯文本）；DeepSeek：deepseek-chat；智谱：glm-4v（识图）/ glm-4-plus
+              阿里云百炼：业务空间用控制台模型 id（如 <span className="text-gray-400">qwen3.5-omni-flash</span>，小写）；识图还可选 <span className="text-gray-400">qwen-vl-max</span>。DeepSeek：<span className="text-gray-400">deepseek-chat</span>
             </p>
           )}
         </div>
@@ -833,6 +894,14 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           >
             恢复默认
           </button>
+          {looksLikeApiKey(settings.baseUrl) && (
+            <button
+              onClick={handleClearBadConfig}
+              className="px-3 py-2 rounded-xl border border-red-500/50 text-red-400 text-xs hover:bg-red-500/10 transition-colors"
+            >
+              修正 Token 位置
+            </button>
+          )}
           <button
             onClick={handleSaveSettings}
             className={`flex-1 py-2 rounded-xl font-bold text-white text-xs transition-all ${
@@ -845,8 +914,12 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           </button>
         </div>
 
+        {settingsError && (
+          <p className="text-xs text-red-400 whitespace-pre-wrap break-words">{settingsError}</p>
+        )}
+
         <p className="text-xs text-gray-400">
-          给诺神接上 AI 大脑，用于算目标、认食物、写周报。只存本地，不上传，啊你知道吧。
+          给诺神接上 AI 大脑，用于算目标、认食物、写周报。只存本地，不上传。点击「生成」会自动保存当前配置。
         </p>
       </div>
     </div>
