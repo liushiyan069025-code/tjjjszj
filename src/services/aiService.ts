@@ -23,7 +23,16 @@ function ensureApiKey(settings: AppSettings): void {
 
 /** 构建目标 URL */
 function buildTargetUrl(settings: AppSettings): string {
-  const baseUrl = settings.baseUrl.replace(/\/+$/, '');
+  let baseUrl = settings.baseUrl.replace(/\/+$/, '');
+
+  // 智能修正：阿里云 DashScope 根域名缺少 /compatible-mode 路径时自动补全
+  // 正确的 OpenAI 兼容端点：https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+  // 若用户只填 https://dashscope.aliyuncs.com，请求会命中网关返回 405 HTML 错误页
+  if (baseUrl.includes('dashscope.aliyuncs.com') && !baseUrl.includes('compatible-mode')) {
+    baseUrl = `${baseUrl}/compatible-mode`;
+    console.warn('[AI] 检测到 DashScope baseUrl 缺少 /compatible-mode 路径，已自动补全:', baseUrl);
+  }
+
   return settings.apiType === 'anthropic'
     ? `${baseUrl}/v1/messages`
     : `${baseUrl}/v1/chat/completions`;
@@ -108,6 +117,20 @@ function buildVisionRequestBody(
   });
 }
 
+/** 清洗上游错误文本：HTML 错误页 → 简洁提示 */
+function sanitizeUpstreamError(text: string): string {
+  if (!text) return '';
+  // 检测 HTML 错误页（阿里云/CDN 网关常返回 <!doctype html> ...）
+  if (/<!doctype\s*html|<html[\s>]/i.test(text)) {
+    // 尝试提取 <title> 或 <h2> 中的错误码
+    const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const h2Match = text.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+    const code = titleMatch?.[1]?.trim() || h2Match?.[1]?.trim() || '';
+    return `上游返回 HTML 错误页（非 JSON）。${code ? `页面标题: ${code}。` : ''}请检查 Base URL 路径是否正确，例如阿里云 DashScope 需填 https://dashscope.aliyuncs.com/compatible-mode`;
+  }
+  return text;
+}
+
 /** 解析非流式响应 */
 function parseResponse(data: any, apiType: ApiType): string {
   if (apiType === 'anthropic') {
@@ -175,11 +198,11 @@ async function callAI(
       const errorData = await resp.json();
       if (errorData.error) {
         errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${errorData.detail}`;
+        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
       }
     } catch {
       const text = await resp.text();
-      if (text) errorMsg += ` - ${text.slice(0, 300)}`;
+      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
     }
     throw new Error(errorMsg);
   }
@@ -232,11 +255,11 @@ export async function callAIStream(
       const errorData = await resp.json();
       if (errorData.error) {
         errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${errorData.detail}`;
+        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
       }
     } catch {
       const text = await resp.text();
-      if (text) errorMsg += ` - ${text.slice(0, 300)}`;
+      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
     }
     throw new Error(errorMsg);
   }
@@ -580,11 +603,11 @@ export async function recognizeFoodImage(imageBase64: string): Promise<MealResul
       const errorData = await resp.json();
       if (errorData.error) {
         errorMsg = errorData.error;
-        if (errorData.detail) errorMsg += `: ${errorData.detail}`;
+        if (errorData.detail) errorMsg += `: ${sanitizeUpstreamError(String(errorData.detail)).slice(0, 300)}`;
       }
     } catch {
       const text = await resp.text();
-      if (text) errorMsg += ` - ${text.slice(0, 300)}`;
+      if (text) errorMsg += ` - ${sanitizeUpstreamError(text).slice(0, 300)}`;
     }
     throw new Error(errorMsg);
   }

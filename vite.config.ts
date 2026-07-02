@@ -49,6 +49,18 @@ export default defineConfig({
               isStream = parsed.stream === true;
             } catch { /* ignore */ }
 
+            /** 清洗上游错误文本：HTML 错误页 → 简洁提示，避免把整段 HTML 透传给前端 */
+            const sanitizeUpstreamError = (text: string): string => {
+              if (!text) return '';
+              if (/<!doctype\s*html|<html[\s>]/i.test(text)) {
+                const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+                const h2Match = text.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i);
+                const code = titleMatch?.[1]?.trim() || h2Match?.[1]?.trim() || '';
+                return `上游返回 HTML 错误页（非 JSON）。${code ? `页面标题: ${code}。` : ''}请检查 Base URL 路径是否正确，例如阿里云 DashScope 需填 https://dashscope.aliyuncs.com/compatible-mode`;
+              }
+              return text;
+            };
+
             const headers: Record<string, string> = {
               'Content-Type': 'application/json',
             };
@@ -72,10 +84,11 @@ export default defineConfig({
 
             if (!response.ok) {
               const errorText = await response.text();
-              console.error('[AI Proxy] 上游错误:', errorText.slice(0, 500));
+              const cleanError = sanitizeUpstreamError(errorText);
+              console.error('[AI Proxy] 上游错误:', cleanError.slice(0, 500));
               res.statusCode = response.status;
               res.setHeader('Content-Type', 'application/json');
-              res.end(JSON.stringify({ error: `API 返回错误 ${response.status}`, detail: errorText.slice(0, 500) }));
+              res.end(JSON.stringify({ error: `API 返回错误 ${response.status}`, detail: cleanError.slice(0, 500) }));
               return;
             }
 
