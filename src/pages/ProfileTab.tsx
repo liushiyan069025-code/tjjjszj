@@ -17,8 +17,8 @@ const API_TYPE_OPTIONS: { value: ApiType; label: string; desc: string }[] = [
 ];
 
 const GATEWAY_MODE_OPTIONS: { value: GatewayMode; label: string; desc: string }[] = [
-  { value: 'standard', label: '标准 OpenAI', desc: '公司网关 /v1/chat/completions（申通用这个）' },
-  { value: 'dashscope', label: '百炼 compatible-mode', desc: '阿里云 DashScope / 百炼业务空间' },
+  { value: 'dashscope', label: '百炼 compatible-mode', desc: '申通 devops-llmgateway / 阿里云百炼（推荐）' },
+  { value: 'standard', label: '标准 OpenAI', desc: '普通 /v1/chat/completions 网关' },
   { value: 'full', label: '完整 URL', desc: 'IT 给了含 chat/completions 的全路径' },
 ];
 
@@ -920,7 +920,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             value={settings.baseUrl}
             onChange={(e) => setSettings((prev) => ({ ...prev, baseUrl: e.target.value }))}
             className="input-field mt-1"
-            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/v1' : 'https://api.anthropic.com'}
+            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/compatible-mode/v1' : 'https://api.anthropic.com'}
           />
           {looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-red-400 mt-1 leading-relaxed">
@@ -929,7 +929,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           )}
           {settings.apiType === 'openai' && !looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              <span className="text-gray-400">申通 LLM 网关</span>：选「标准 OpenAI」，地址填 <span className="text-gray-400">https://devops-llmgateway.sto.cn/v1</span>（<span className="text-red-400/80">不要</span> compatible-mode）。405 时点下方「探测可用路径」。
+              <span className="text-gray-400">申通 LLM 网关</span>：选「百炼 compatible-mode」，地址 <span className="text-gray-400">https://devops-llmgateway.sto.cn/compatible-mode/v1</span>。404 说明不要用 /v1；405 时点「探测可用路径」。
             </p>
           )}
         </div>

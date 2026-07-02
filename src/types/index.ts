@@ -243,7 +243,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_MODEL) ||
     'qwen-vl-max',
   apiType: 'openai',
-  gatewayMode: 'standard',
+  gatewayMode: 'dashscope',
   authStyle: 'bearer',
 };
 
@@ -277,7 +277,7 @@ export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettin
     baseUrl: String(raw.baseUrl ?? '').trim(),
     model: String(raw.model ?? DEFAULT_SETTINGS.model).trim(),
     apiType: raw.apiType === 'anthropic' ? 'anthropic' : 'openai',
-    gatewayMode: raw.gatewayMode === 'dashscope' || raw.gatewayMode === 'full' ? raw.gatewayMode : 'standard',
+    gatewayMode: raw.gatewayMode === 'standard' || raw.gatewayMode === 'full' ? raw.gatewayMode : 'dashscope',
     authStyle: raw.authStyle === 'api-key' ? 'api-key' : 'bearer',
   };
   const repaired: string[] = [];
@@ -303,11 +303,15 @@ export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettin
     return { settings, repaired };
   }
 
-  // 申通网关：compatible-mode 路径会 405，改用标准 /v1
-  if (baseUrl.includes('devops-llmgateway.sto.cn') && /compatible-mode/i.test(baseUrl)) {
-    settings.baseUrl = 'https://devops-llmgateway.sto.cn/v1';
-    settings.gatewayMode = 'standard';
-    repaired.push('申通网关应使用标准 /v1 路径（非 compatible-mode），已自动调整');
+  // 申通网关：应保留 compatible-mode（/v1 会 404，误删后 /v1 会 405）
+  if (baseUrl.includes('devops-llmgateway.sto.cn')) {
+    if (!/compatible-mode/i.test(baseUrl)) {
+      settings.baseUrl = 'https://devops-llmgateway.sto.cn/compatible-mode/v1';
+    }
+    settings.gatewayMode = 'dashscope';
+    if (!/compatible-mode/i.test(String(raw.baseUrl ?? ''))) {
+      repaired.push('申通网关需使用 compatible-mode 路径，已改为 .../compatible-mode/v1');
+    }
   }
 
   return { settings, repaired };

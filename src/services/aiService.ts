@@ -248,11 +248,11 @@ async function parseProxyError(resp: Response, targetUrl: string): Promise<strin
   }
   if (resp.status === 404) {
     errorMsg += `\n实际请求: ${targetUrl}`;
-    errorMsg += `\n请核对 API 地址是否填到 /v1（如 https://网关域名/xxx/v1），或粘贴 IT 给的含 chat/completions 的完整 URL。`;
+    errorMsg += `\n404 = 路径不存在。申通网关请用「百炼 compatible-mode」+ 地址 https://devops-llmgateway.sto.cn/compatible-mode/v1（不要用 /v1）。`;
   }
   if (resp.status === 405) {
     errorMsg += `\n实际请求: ${targetUrl}`;
-    errorMsg += `\n405 = 路径不接受 POST。申通网关请改用：网关模式「标准 OpenAI」+ 地址 https://devops-llmgateway.sto.cn/v1（不要 compatible-mode），或在诺神配置点「探测可用路径」。`;
+    errorMsg += `\n405 = 路径存在但不接受 POST。若地址是 /v1，请改回 .../compatible-mode/v1；或点「探测可用路径」。`;
   }
   return errorMsg;
 }
@@ -305,16 +305,27 @@ export function deriveCandidateUrls(baseUrl: string, apiType: ApiType): string[]
   }
 
   const g = gatewayRoot(r);
-  // 2) 根 + /v1/<chat>（最常见 OpenAI 兼容路径）
+  const isSto = g.includes('devops-llmgateway.sto.cn');
+
+  if (isSto) {
+    // 申通网关：优先 compatible-mode（/v1  alone 会 404）
+    push(`${g}/compatible-mode/v1/${chatSeg}`);
+    push(`${g}/compatible-mode/${chatSeg}`);
+    push(`${g}/llm/v1/${chatSeg}`);
+    push(`${g}/llmgateway/v1/${chatSeg}`);
+    push(`${g}/api/v1/${chatSeg}`);
+  }
+
+  // 标准 OpenAI 兼容路径
   push(`${g}/v1/${chatSeg}`);
-  // 3) 根 + /compatible-mode/v1/<chat>（阿里云 DashScope 风格）
-  push(`${g}/compatible-mode/v1/${chatSeg}`);
-  // 4) 根 + /<chat>（少数网关直接挂在根下）
+  if (!isSto) {
+    push(`${g}/compatible-mode/v1/${chatSeg}`);
+  }
   push(`${g}/${chatSeg}`);
-  // 5) 根 + /openai/v1/<chat>
   push(`${g}/openai/v1/${chatSeg}`);
-  // 6) 根 + /api/v1/<chat>
-  push(`${g}/api/v1/${chatSeg}`);
+  if (!isSto) {
+    push(`${g}/api/v1/${chatSeg}`);
+  }
 
   return candidates;
 }
