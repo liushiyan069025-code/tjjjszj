@@ -133,7 +133,17 @@ async function handleAiProxy(req, res) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: `API Key 无效 (401)`,
-          detail: `DashScope 返回 invalid_api_key。请检查：1) API Key 是否以 sk- 开头（当前前缀: ${keyPrefix}...，长度: ${keyLen}）；2) Key 是否在阿里云百炼控制台已启用；3) Key 是否复制完整无多余空格。原始错误: ${cleanError.slice(0, 300)}`,
+          detail: `上游返回 invalid_api_key。请检查：1) API Key 是否正确（当前前缀: ${keyPrefix}...，长度: ${keyLen}）；2) Key 是否在对应平台已启用；3) Key 是否复制完整无多余空格。原始错误: ${cleanError.slice(0, 300)}`,
+        }));
+        return;
+      }
+
+      // 404 特殊提示：通常是 Base URL 路径不正确
+      if (response.status === 404) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: `API 端点不存在 (404)`,
+          detail: `上游返回 404，通常是 Base URL 路径不正确。当前请求: ${targetUrl}。请检查 Base URL 是否包含多余路径（如 /compatible-mode），企业内部网关通常只需填 https://your-gateway.com。原始错误: ${cleanError.slice(0, 300)}`,
         }));
         return;
       }

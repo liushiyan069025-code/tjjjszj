@@ -38,6 +38,14 @@ function buildTargetUrl(settings: AppSettings): string {
     console.warn('[AI] 检测到 DashScope baseUrl 缺少 /compatible-mode 路径，已自动补全:', baseUrl);
   }
 
+  // 智能修正：非 DashScope 的自定义网关（如企业内部 LLM 网关）通常不需要 /compatible-mode 前缀
+  // 若用户照搬 DashScope 格式填了 /compatible-mode，但域名不是 dashscope.aliyuncs.com，
+  // 则去掉 /compatible-mode，避免拼接出 .../compatible-mode/v1/chat/completions 导致 404
+  if (!baseUrl.includes('dashscope.aliyuncs.com') && baseUrl.includes('/compatible-mode')) {
+    baseUrl = baseUrl.replace(/\/compatible-mode$/i, '');
+    console.warn('[AI] 检测到自定义网关 baseUrl 含有 /compatible-mode 路径（非 DashScope），已自动移除:', baseUrl);
+  }
+
   return settings.apiType === 'anthropic'
     ? `${baseUrl}/v1/messages`
     : `${baseUrl}/v1/chat/completions`;

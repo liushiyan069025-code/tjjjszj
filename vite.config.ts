@@ -86,6 +86,18 @@ export default defineConfig({
               const errorText = await response.text();
               const cleanError = sanitizeUpstreamError(errorText);
               console.error('[AI Proxy] 上游错误:', cleanError.slice(0, 500));
+
+              // 404 特殊提示：通常是 Base URL 路径不正确
+              if (response.status === 404) {
+                res.statusCode = 404;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                  error: `API 端点不存在 (404)`,
+                  detail: `上游返回 404，通常是 Base URL 路径不正确。当前请求: ${targetUrl}。请检查 Base URL 是否包含多余路径（如 /compatible-mode），企业内部网关通常只需填 https://your-gateway.com。原始错误: ${cleanError.slice(0, 300)}`,
+                }));
+                return;
+              }
+
               res.statusCode = response.status;
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({ error: `API 返回错误 ${response.status}`, detail: cleanError.slice(0, 500) }));
