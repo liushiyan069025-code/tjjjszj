@@ -4,16 +4,22 @@
 // ============================================================
 
 import React, { useState, useEffect } from 'react';
-import type { UserProfile, NutritionGoal, ActivityLevel, AppSettings, ApiType, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise } from '../types';
+import type { UserProfile, NutritionGoal, ActivityLevel, AppSettings, ApiType, GatewayMode, AuthStyle, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise } from '../types';
 import { ACTIVITY_FACTORS, DEFAULT_SETTINGS, loadSettingsWithRepairNotice, saveSettings, looksLikeApiKey, TRAINING_STYLES, SPLIT_TYPES, WEEKDAY_LABELS } from '../types';
 import { calcBMI, calcBMR, calcTDEE, daysUntilTarget, genId, calcDayTotalCalories, calcDayStrengthCalories, calcCardioCalories, calcDayDuration } from '../utils/calculations';
-import { generateNutritionGoal, generateWorkoutPlan } from '../services/aiService';
+import { generateNutritionGoal, generateWorkoutPlan, diagnoseConnection } from '../services/aiService';
 import { CartoonIcon, SectionHeading } from '../components/CartoonIcon';
 import { SkeletonCard } from '../components/Skeleton';
 
 const API_TYPE_OPTIONS: { value: ApiType; label: string; desc: string }[] = [
   { value: 'openai', label: 'OpenAI 兼容', desc: 'OpenAI / DeepSeek / 通义千问 / 自定义' },
   { value: 'anthropic', label: 'Anthropic', desc: 'Claude API 原生格式' },
+];
+
+const GATEWAY_MODE_OPTIONS: { value: GatewayMode; label: string; desc: string }[] = [
+  { value: 'standard', label: '标准 OpenAI', desc: '公司网关 /v1/chat/completions（申通用这个）' },
+  { value: 'dashscope', label: '百炼 compatible-mode', desc: '阿里云 DashScope / 百炼业务空间' },
+  { value: 'full', label: '完整 URL', desc: 'IT 给了含 chat/completions 的全路径' },
 ];
 
 interface ProfileTabProps {
@@ -32,6 +38,8 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [showKey, setShowKey] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [diagnoseLoading, setDiagnoseLoading] = useState(false);
+  const [diagnoseLog, setDiagnoseLog] = useState('');
 
   // 健身计划状态
   const [workoutLoading, setWorkoutLoading] = useState(false);
@@ -112,6 +120,39 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
     setSettings(kept);
     saveSettings(kept);
     setSettingsError('已清空错误地址。请在「API 地址」填公司网关 https://...，再保存。');
+  };
+
+  /** 探测公司网关可用路径（解决 405） */
+  const handleDiagnose = async () => {
+    setDiagnoseLoading(true);
+    setDiagnoseLog('');
+    setSettingsError('');
+    try {
+      const normalized = normalizeSettings(settings);
+      setSettings(normalized);
+      saveSettings(normalized);
+      const { candidates, firstOk } = await diagnoseConnection(normalized);
+      const lines = candidates.map(
+        (c) => `${c.ok ? '✅' : '❌'} ${c.status || '—'} ${c.url}${c.snippet ? ` — ${c.snippet.slice(0, 60)}` : ''}`
+      );
+      setDiagnoseLog(lines.join('\n'));
+      if (firstOk) {
+        const next: AppSettings = {
+          ...normalized,
+          baseUrl: firstOk,
+          gatewayMode: 'full',
+        };
+        setSettings(next);
+        saveSettings(next);
+        setSettingsError(`探测成功，已应用：${firstOk}\n请确认模型名后点「保存设置」再试 AI。`);
+      } else {
+        setSettingsError('未找到可用路径。若均为 405，请向 IT 索取 curl 示例；若为 401，说明路径可能对但 Key 需检查。');
+      }
+    } catch (e: any) {
+      setSettingsError(e.message || '探测失败');
+    } finally {
+      setDiagnoseLoading(false);
+    }
   };
 
   const bmi = calcBMI(profile.weight, profile.height);
@@ -817,6 +858,30 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           </div>
         </div>
 
+        {/* 网关路径模式 */}
+        {settings.apiType === 'openai' && (
+          <div>
+            <label className="text-xs text-gray-400">网关路径模式</label>
+            <div className="grid grid-cols-1 gap-2 mt-1">
+              {GATEWAY_MODE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, gatewayMode: opt.value }))}
+                  className={`text-left p-2.5 rounded-xl border-2 transition-all ${
+                    (settings.gatewayMode ?? 'standard') === opt.value
+                      ? 'border-primary-500 bg-primary-500/10'
+                      : 'border-gray-600 hover:border-primary-500/50'
+                  }`}
+                >
+                  <div className="font-medium text-sm text-gray-200">{opt.label}</div>
+                  <div className="text-[10px] text-gray-400 mt-0.5">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* API Key */}
         <div>
           <label className="text-xs text-gray-400">API Key</label>
@@ -855,7 +920,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             value={settings.baseUrl}
             onChange={(e) => setSettings((prev) => ({ ...prev, baseUrl: e.target.value }))}
             className="input-field mt-1"
-            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/compatible-mode/v1' : 'https://api.anthropic.com'}
+            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/v1' : 'https://api.anthropic.com'}
           />
           {looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-red-400 mt-1 leading-relaxed">
@@ -864,10 +929,33 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           )}
           {settings.apiType === 'openai' && !looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              <span className="text-gray-400">申通 LLM 网关</span>：地址填 <span className="text-gray-400">https://devops-llmgateway.sto.cn/compatible-mode/v1</span>（须保留 compatible-mode，勿只填域名）。Token 填 API Key，模型问 IT。
+              <span className="text-gray-400">申通 LLM 网关</span>：选「标准 OpenAI」，地址填 <span className="text-gray-400">https://devops-llmgateway.sto.cn/v1</span>（<span className="text-red-400/80">不要</span> compatible-mode）。405 时点下方「探测可用路径」。
             </p>
           )}
         </div>
+
+        {/* 鉴权方式 */}
+        {settings.apiType === 'openai' && (
+          <div>
+            <label className="text-xs text-gray-400">鉴权方式</label>
+            <div className="flex gap-2 mt-1">
+              {(['bearer', 'api-key'] as AuthStyle[]).map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  onClick={() => setSettings((prev) => ({ ...prev, authStyle: style }))}
+                  className={`flex-1 py-2 rounded-xl border-2 text-xs transition-all ${
+                    (settings.authStyle ?? 'bearer') === style
+                      ? 'border-primary-500 bg-primary-500/10 text-gray-200'
+                      : 'border-gray-600 text-gray-400 hover:border-primary-500/50'
+                  }`}
+                >
+                  {style === 'bearer' ? 'Bearer Token' : 'api-key 头'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Model */}
         <div>
@@ -903,6 +991,13 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             </button>
           )}
           <button
+            onClick={handleDiagnose}
+            disabled={diagnoseLoading}
+            className="px-3 py-2 rounded-xl border border-primary-500/50 text-primary-400 text-xs hover:bg-primary-500/10 transition-colors disabled:opacity-50"
+          >
+            {diagnoseLoading ? '探测中…' : '探测可用路径'}
+          </button>
+          <button
             onClick={handleSaveSettings}
             className={`flex-1 py-2 rounded-xl font-bold text-white text-xs transition-all ${
               settingsSaved
@@ -913,6 +1008,10 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             {settingsSaved ? '✓ 已保存' : '保存设置'}
           </button>
         </div>
+
+        {diagnoseLog && (
+          <pre className="text-[10px] text-gray-400 whitespace-pre-wrap break-all bg-gray-800/50 rounded-lg p-2 max-h-32 overflow-y-auto">{diagnoseLog}</pre>
+        )}
 
         {settingsError && (
           <p className="text-xs text-red-400 whitespace-pre-wrap break-words">{settingsError}</p>

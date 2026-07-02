@@ -70,6 +70,78 @@ function sanitizeUpstreamError(text) {
   return text;
 }
 
+/** 构建上游鉴权头 */
+function buildUpstreamAuthHeaders(apiKey, apiType, authStyle) {
+  const key = String(apiKey).trim();
+  if (apiType === 'anthropic') {
+    return { 'x-api-key': key, 'anthropic-version': '2023-06-01' };
+  }
+  if (authStyle === 'api-key') {
+    return { 'api-key': key };
+  }
+  return { Authorization: `Bearer ${key}` };
+}
+
+/** 分类上游 HTTP 状态（供诊断用） */
+function classifyUpstreamStatus(status, snippet) {
+  if (status >= 200 && status < 300) return 'ok';
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 404) return 'notfound';
+  if (status === 405) return 'method';
+  if (snippet && /<!doctype\s*html|<html[\s>]/i.test(snippet)) return 'html';
+  return 'other';
+}
+
+async function handleAiDiagnose(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return;
+  }
+
+  const targetUrl = req.headers['x-proxy-target'];
+  const apiKey = req.headers['x-proxy-key'];
+  const apiType = req.headers['x-proxy-type'] || 'openai';
+  const authStyle = req.headers['x-proxy-auth'] || 'bearer';
+
+  if (!targetUrl || !apiKey) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: '缺少代理配置' }));
+    return;
+  }
+
+  try {
+    const raw = await readBody(req);
+    let model = 'ping';
+    try { model = JSON.parse(raw || '{}').model || model; } catch { /* ignore */ }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      ...buildUpstreamAuthHeaders(apiKey, apiType, authStyle),
+    };
+    const body = JSON.stringify({
+      model,
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'ping' }],
+    });
+
+    const response = await fetch(targetUrl, { method: 'POST', headers, body });
+    const snippet = sanitizeUpstreamError((await response.text()).slice(0, 300));
+    const kind = classifyUpstreamStatus(response.status, snippet);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: response.status,
+      ok: kind === 'ok' || kind === 'auth', // 401 说明路径对、Key 可能错
+      kind,
+      snippet,
+    }));
+  } catch (err) {
+    res.writeHead(502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 0, ok: false, kind: 'network', snippet: err.message }));
+  }
+}
+
 async function handleAiProxy(req, res) {
   if (req.method !== 'POST') {
     res.writeHead(405, { 'Content-Type': 'application/json' });
@@ -80,9 +152,10 @@ async function handleAiProxy(req, res) {
   const targetUrl = req.headers['x-proxy-target'];
   const apiKey = req.headers['x-proxy-key'];
   const apiType = req.headers['x-proxy-type'] || 'openai';
+  const authStyle = req.headers['x-proxy-auth'] || 'bearer';
 
   // 调试日志：记录 Key 长度和前缀（不泄露完整 Key），便于排查 401 问题
-  console.log('[AI Proxy] 收到请求 | targetUrl:', targetUrl, '| apiType:', apiType, '| keyLength:', apiKey ? String(apiKey).length : 0, '| keyPrefix:', apiKey ? String(apiKey).slice(0, 6) + '...' : '(空)');
+  console.log('[AI Proxy] 收到请求 | targetUrl:', targetUrl, '| apiType:', apiType, '| authStyle:', authStyle, '| keyLength:', apiKey ? String(apiKey).length : 0, '| keyPrefix:', apiKey ? String(apiKey).slice(0, 6) + '...' : '(空)');
 
   if (!targetUrl || !apiKey) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -102,14 +175,8 @@ async function handleAiProxy(req, res) {
 
     const headers = {
       'Content-Type': 'application/json',
+      ...buildUpstreamAuthHeaders(apiKey, apiType, authStyle),
     };
-
-    if (apiType === 'anthropic') {
-      headers['x-api-key'] = apiKey;
-      headers['anthropic-version'] = '2023-06-01';
-    } else {
-      headers['Authorization'] = `Bearer ${apiKey}`;
-    }
 
     console.log('[AI Proxy] 请求目标:', targetUrl, '| apiType:', apiType, '| stream:', isStream);
 
@@ -143,7 +210,16 @@ async function handleAiProxy(req, res) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: `API 端点不存在 (404)`,
-          detail: `上游返回 404，通常是 Base URL 路径不正确。当前请求: ${targetUrl}。请检查 Base URL 是否包含多余路径（如 /compatible-mode），企业内部网关通常只需填 https://your-gateway.com。原始错误: ${cleanError.slice(0, 300)}`,
+          detail: `上游返回 404，通常是 Base URL 路径不正确。当前请求: ${targetUrl}。申通网关请试「标准 OpenAI」模式 + 地址填 https://devops-llmgateway.sto.cn/v1。原始错误: ${cleanError.slice(0, 300)}`,
+        }));
+        return;
+      }
+
+      if (response.status === 405) {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'API 方法不允许 (405)',
+          detail: `当前请求: ${targetUrl}。申通网关通常用 /v1/chat/completions（非 compatible-mode）。请在 App 选「标准 OpenAI」并把地址改为 https://devops-llmgateway.sto.cn/v1，或点「探测可用路径」。`,
         }));
         return;
       }
@@ -251,7 +327,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, x-proxy-target, x-proxy-key, x-proxy-type',
+      'Access-Control-Allow-Headers': 'Content-Type, x-proxy-target, x-proxy-key, x-proxy-type, x-proxy-auth',
     });
     res.end();
     return;
@@ -260,6 +336,11 @@ const server = http.createServer(async (req, res) => {
   // AI 代理路由
   if (urlPath === '/api/ai-proxy') {
     await handleAiProxy(req, res);
+    return;
+  }
+
+  if (urlPath === '/api/ai-diagnose') {
+    await handleAiDiagnose(req, res);
     return;
   }
 

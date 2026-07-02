@@ -215,12 +215,22 @@ export interface WorkoutLog {
 /** AI API 类型 */
 export type ApiType = 'openai' | 'anthropic';
 
+/** 网关路径模式 */
+export type GatewayMode = 'standard' | 'dashscope' | 'full';
+
+/** 鉴权头方式（部分公司网关用 api-key 而非 Bearer） */
+export type AuthStyle = 'bearer' | 'api-key';
+
 /** AI 设置 */
 export interface AppSettings {
   apiKey: string;
   baseUrl: string;
   model: string;
   apiType: ApiType;
+  /** 网关路径模式，默认 standard（公司统一网关） */
+  gatewayMode?: GatewayMode;
+  /** 鉴权方式，默认 bearer */
+  authStyle?: AuthStyle;
 }
 
 /** 默认设置（阿里云百炼 DashScope，国内可直接访问，无需翻墙） */
@@ -233,6 +243,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_MODEL) ||
     'qwen-vl-max',
   apiType: 'openai',
+  gatewayMode: 'standard',
+  authStyle: 'bearer',
 };
 
 /** localStorage key */
@@ -265,6 +277,8 @@ export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettin
     baseUrl: String(raw.baseUrl ?? '').trim(),
     model: String(raw.model ?? DEFAULT_SETTINGS.model).trim(),
     apiType: raw.apiType === 'anthropic' ? 'anthropic' : 'openai',
+    gatewayMode: raw.gatewayMode === 'dashscope' || raw.gatewayMode === 'full' ? raw.gatewayMode : 'standard',
+    authStyle: raw.authStyle === 'api-key' ? 'api-key' : 'bearer',
   };
   const repaired: string[] = [];
 
@@ -287,6 +301,13 @@ export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettin
       '请在「API 地址」填写公司网关根地址（https://...），然后点「保存设置」。'
     );
     return { settings, repaired };
+  }
+
+  // 申通网关：compatible-mode 路径会 405，改用标准 /v1
+  if (baseUrl.includes('devops-llmgateway.sto.cn') && /compatible-mode/i.test(baseUrl)) {
+    settings.baseUrl = 'https://devops-llmgateway.sto.cn/v1';
+    settings.gatewayMode = 'standard';
+    repaired.push('申通网关应使用标准 /v1 路径（非 compatible-mode），已自动调整');
   }
 
   return { settings, repaired };

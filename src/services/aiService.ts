@@ -3,7 +3,7 @@
 // 支持 OpenAI 兼容 / Anthropic 两种格式（页面配置）
 // ============================================================
 
-import type { UserProfile, NutritionGoal, MealResult, AppSettings, ApiType, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise, CardioConfig, MealPlan, MealPlanItem } from '../types';
+import type { UserProfile, NutritionGoal, MealResult, AppSettings, ApiType, GatewayMode, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise, CardioConfig, MealPlan, MealPlanItem } from '../types';
 import { loadSettings, TRAINING_STYLES, SPLIT_TYPES } from '../types';
 import { calcBMR, calcTDEE, calcBMI, genId, calcDayDuration } from '../utils/calculations';
 import { ACTIVITY_FACTORS } from '../types';
@@ -52,11 +52,22 @@ function validateApiSettings(settings: AppSettings): void {
   }
 }
 
+/** 标准 OpenAI 网关 URL（公司统一网关，不含 compatible-mode） */
+function buildStandardOpenAIUrl(baseUrl: string): string {
+  let url = baseUrl.replace(/\/+$/, '');
+  // 申通等网关通常只认 /v1/chat/completions，不认 /compatible-mode/...
+  url = url.replace(/\/compatible-mode(\/v1)?$/i, '');
+  if (url.endsWith('/chat/completions')) return url;
+  if (url.endsWith('/v1')) return `${url}/chat/completions`;
+  return `${url}/v1/chat/completions`;
+}
+
 /** 构建目标 URL */
 function buildTargetUrl(settings: AppSettings): string {
   validateApiSettings(settings);
 
   let baseUrl = settings.baseUrl.trim().replace(/\/+$/, '');
+  const gatewayMode: GatewayMode = settings.gatewayMode ?? 'standard';
 
   // 仅对域名类地址补全 https://；禁止把 sk- Key 当成 URL
   if (!/^https?:\/\//i.test(baseUrl)) {
@@ -66,22 +77,27 @@ function buildTargetUrl(settings: AppSettings): string {
     baseUrl = `https://${baseUrl}`;
   }
 
-  // IT 文档若给出完整 chat 端点，直接沿用（公司网关常见）
-  if (/\/chat\/completions\/?$/i.test(baseUrl)) {
-    console.log('[AI] 请求目标 URL:', baseUrl);
+  // 完整 chat 端点（IT 文档给出全路径时）
+  if (gatewayMode === 'full' || /\/chat\/completions\/?$/i.test(baseUrl)) {
+    console.log('[AI] 请求目标 URL:', baseUrl, '| gatewayMode: full');
     return baseUrl;
   }
 
+  // 公司标准 OpenAI 网关（申通 devops-llmgateway 等）
+  if (gatewayMode === 'standard') {
+    const targetUrl = buildStandardOpenAIUrl(baseUrl);
+    console.log('[AI] 请求目标 URL:', targetUrl, '| gatewayMode: standard');
+    return targetUrl;
+  }
+
+  // 百炼 / DashScope compatible-mode
   const isDashScope = baseUrl.includes('dashscope.aliyuncs.com');
   const isWorkspaceMaas = baseUrl.includes('maas.aliyuncs.com');
 
-  // 阿里云公共 DashScope：根域名缺少 /compatible-mode 时自动补全
   if (isDashScope && !baseUrl.includes('compatible-mode')) {
     baseUrl = `${baseUrl}/compatible-mode`;
     console.warn('[AI] 检测到 DashScope baseUrl 缺少 /compatible-mode 路径，已自动补全:', baseUrl);
   }
-
-  // 不再自动删除公司网关 URL 中的 /compatible-mode（删错会导致 404/405）
 
   let targetUrl: string;
   if (settings.apiType === 'anthropic') {
@@ -93,14 +109,23 @@ function buildTargetUrl(settings: AppSettings): string {
   } else if (baseUrl.endsWith('/v1')) {
     targetUrl = `${baseUrl}/chat/completions`;
   } else if (/\/v\d+\/?$/i.test(baseUrl)) {
-    // 如 /api/v1、/openai/v2
     targetUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
   } else {
     targetUrl = `${baseUrl}/v1/chat/completions`;
   }
 
-  console.log('[AI] 请求目标 URL:', targetUrl);
+  console.log('[AI] 请求目标 URL:', targetUrl, '| gatewayMode: dashscope');
   return targetUrl;
+}
+
+function proxyHeaders(settings: AppSettings, targetUrl: string): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'x-proxy-target': targetUrl,
+    'x-proxy-key': cleanApiKey(settings.apiKey),
+    'x-proxy-type': settings.apiType,
+    'x-proxy-auth': settings.authStyle ?? 'bearer',
+  };
 }
 
 /** 是否 qwen 系模型（仅这类模型附加 enable_thinking，避免公司网关因未知字段拒收） */
@@ -227,12 +252,121 @@ async function parseProxyError(resp: Response, targetUrl: string): Promise<strin
   }
   if (resp.status === 405) {
     errorMsg += `\n实际请求: ${targetUrl}`;
-    errorMsg += `\n405 = 该路径不接受 POST，通常是 API 地址路径不对。请向 IT 确认 OpenAI 兼容 chat 接口完整路径，可尝试：`;
-    errorMsg += `\n1) 地址填到 /v1，如 https://网关/.../v1`;
-    errorMsg += `\n2) 若文档含 compatible-mode，保留完整路径，如 .../compatible-mode/v1`;
-    errorMsg += `\n3) 或直接粘贴完整 URL：.../chat/completions`;
+    errorMsg += `\n405 = 路径不接受 POST。申通网关请改用：网关模式「标准 OpenAI」+ 地址 https://devops-llmgateway.sto.cn/v1（不要 compatible-mode），或在诺神配置点「探测可用路径」。`;
   }
   return errorMsg;
+}
+
+// ============================================================
+// 连接诊断：自动探测正确的 chat 端点路径
+// 解决公司网关 405（路径不接受 POST）等问题
+// ============================================================
+
+export interface DiagnoseCandidate {
+  url: string;
+  status: number;
+  ok: boolean;
+  kind: 'ok' | 'auth' | 'notfound' | 'method' | 'html' | 'network' | 'other';
+  snippet: string;
+  latencyMs: number;
+}
+
+/** 计算网关根地址：反复剥离末尾的 /chat/completions、/messages、/v1、/compatible-mode 等已知段 */
+function gatewayRoot(url: string): string {
+  let r = url.trim().replace(/\/+$/, '');
+  for (let i = 0; i < 5; i++) {
+    if (/\/chat\/completions$/i.test(r)) r = r.replace(/\/chat\/completions$/i, '');
+    else if (/\/messages$/i.test(r)) r = r.replace(/\/messages$/i, '');
+    else if (/\/v\d+$/i.test(r)) r = r.replace(/\/v\d+$/i, '');
+    else if (/\/compatible-mode$/i.test(r)) r = r.replace(/\/compatible-mode$/i, '');
+    else break;
+  }
+  return r;
+}
+
+/** 由 Base URL 派生候选 chat 端点（去重，保留优先级） */
+export function deriveCandidateUrls(baseUrl: string, apiType: ApiType): string[] {
+  const r = baseUrl.trim().replace(/\/+$/, '');
+  if (!r) return [];
+  const isAnthropic = apiType === 'anthropic';
+  const chatSeg = isAnthropic ? 'messages' : 'chat/completions';
+
+  const candidates: string[] = [];
+  const push = (u: string) => {
+    const clean = u.replace(/\/+$/, '');
+    if (clean && !candidates.includes(clean)) candidates.push(clean);
+  };
+
+  // 1) 用户原样 + 端点段（当前 buildTargetUrl 的行为，便于直观看到 405）
+  if (new RegExp(`/${chatSeg}$`, 'i').test(r)) {
+    push(r);
+  } else {
+    push(`${r}/${chatSeg}`);
+  }
+
+  const g = gatewayRoot(r);
+  // 2) 根 + /v1/<chat>（最常见 OpenAI 兼容路径）
+  push(`${g}/v1/${chatSeg}`);
+  // 3) 根 + /compatible-mode/v1/<chat>（阿里云 DashScope 风格）
+  push(`${g}/compatible-mode/v1/${chatSeg}`);
+  // 4) 根 + /<chat>（少数网关直接挂在根下）
+  push(`${g}/${chatSeg}`);
+  // 5) 根 + /openai/v1/<chat>
+  push(`${g}/openai/v1/${chatSeg}`);
+  // 6) 根 + /api/v1/<chat>
+  push(`${g}/api/v1/${chatSeg}`);
+
+  return candidates;
+}
+
+/** 对单个候选 URL 发起最小化探测请求（经 /api/ai-diagnose 代理） */
+async function probeCandidate(
+  targetUrl: string,
+  settings: AppSettings
+): Promise<DiagnoseCandidate> {
+  const started = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const base: DiagnoseCandidate = {
+    url: targetUrl,
+    status: 0,
+    ok: false,
+    kind: 'network',
+    snippet: '',
+    latencyMs: 0,
+  };
+  try {
+    const resp = await fetch('/api/ai-diagnose', {
+      method: 'POST',
+      headers: proxyHeaders(settings, targetUrl),
+      body: JSON.stringify({ model: settings.model }),
+    });
+    base.latencyMs = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - started);
+    let data: any = {};
+    try { data = await resp.json(); } catch { /* ignore */ }
+    base.status = Number(data.status) || resp.status;
+    base.snippet = String(data.snippet || data.detail || '').slice(0, 200);
+    base.kind = data.kind || 'other';
+    base.ok = data.ok === true;
+  } catch (e: any) {
+    base.latencyMs = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - started);
+    base.kind = 'network';
+    base.snippet = e?.message || '网络错误';
+  }
+  return base;
+}
+
+/** 诊断连接：逐个探测候选路径，命中即停，返回全部结果与首个可用路径 */
+export async function diagnoseConnection(
+  settings: AppSettings
+): Promise<{ candidates: DiagnoseCandidate[]; firstOk?: string }> {
+  const candidates = deriveCandidateUrls(settings.baseUrl, settings.apiType);
+  const results: DiagnoseCandidate[] = [];
+  for (const url of candidates) {
+    const res = await probeCandidate(url, settings);
+    results.push(res);
+    if (res.ok) break; // 命中即停，避免对后续路径产生不必要请求/计费
+  }
+  const firstOk = results.find((c) => c.ok)?.url;
+  return { candidates: results, firstOk };
 }
 
 /** 解析非流式响应 */
@@ -287,12 +421,7 @@ async function callAI(
 
   const resp = await fetch('/api/ai-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-proxy-target': targetUrl,
-      'x-proxy-key': cleanApiKey(settings.apiKey),
-      'x-proxy-type': settings.apiType,
-    },
+    headers: proxyHeaders(settings, targetUrl),
     body,
   });
 
@@ -333,12 +462,7 @@ export async function callAIStream(
 
   const resp = await fetch('/api/ai-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-proxy-target': targetUrl,
-      'x-proxy-key': cleanApiKey(settings.apiKey),
-      'x-proxy-type': settings.apiType,
-    },
+    headers: proxyHeaders(settings, targetUrl),
     body,
   });
 
@@ -670,12 +794,7 @@ export async function recognizeFoodImage(imageBase64: string): Promise<MealResul
 
   const resp = await fetch('/api/ai-proxy', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-proxy-target': targetUrl,
-      'x-proxy-key': cleanApiKey(settings.apiKey),
-      'x-proxy-type': settings.apiType,
-    },
+    headers: proxyHeaders(settings, targetUrl),
     body,
   });
 
