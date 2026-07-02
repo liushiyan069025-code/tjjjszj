@@ -81,6 +81,9 @@ async function handleAiProxy(req, res) {
   const apiKey = req.headers['x-proxy-key'];
   const apiType = req.headers['x-proxy-type'] || 'openai';
 
+  // 调试日志：记录 Key 长度和前缀（不泄露完整 Key），便于排查 401 问题
+  console.log('[AI Proxy] 收到请求 | targetUrl:', targetUrl, '| apiType:', apiType, '| keyLength:', apiKey ? String(apiKey).length : 0, '| keyPrefix:', apiKey ? String(apiKey).slice(0, 6) + '...' : '(空)');
+
   if (!targetUrl || !apiKey) {
     res.writeHead(400, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: '缺少代理配置 (targetUrl/apiKey)' }));
@@ -122,6 +125,19 @@ async function handleAiProxy(req, res) {
       const errorText = await response.text();
       const cleanError = sanitizeUpstreamError(errorText);
       console.error('[AI Proxy] 上游错误:', cleanError.slice(0, 500));
+
+      // 401 特殊提示：帮助用户排查 API Key 问题
+      if (response.status === 401) {
+        const keyLen = String(apiKey).trim().length;
+        const keyPrefix = String(apiKey).trim().slice(0, 6);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: `API Key 无效 (401)`,
+          detail: `DashScope 返回 invalid_api_key。请检查：1) API Key 是否以 sk- 开头（当前前缀: ${keyPrefix}...，长度: ${keyLen}）；2) Key 是否在阿里云百炼控制台已启用；3) Key 是否复制完整无多余空格。原始错误: ${cleanError.slice(0, 300)}`,
+        }));
+        return;
+      }
+
       res.writeHead(response.status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `API 返回错误 ${response.status}`, detail: cleanError.slice(0, 500) }));
       return;

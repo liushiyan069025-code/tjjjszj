@@ -16,9 +16,14 @@ function getSettings(): AppSettings {
 
 /** 检查 API Key 是否已配置 */
 function ensureApiKey(settings: AppSettings): void {
-  if (!settings.apiKey) {
+  if (!settings.apiKey || !settings.apiKey.trim()) {
     throw new Error('那我问你，API Key 呢？先去「诺神配置」填上啊，听见没有！');
   }
+}
+
+/** 清洗 API Key：去除前后空格（粘贴时常见问题） */
+function cleanApiKey(key: string): string {
+  return key.trim();
 }
 
 /** 构建目标 URL */
@@ -186,7 +191,7 @@ async function callAI(
     headers: {
       'Content-Type': 'application/json',
       'x-proxy-target': targetUrl,
-      'x-proxy-key': settings.apiKey,
+      'x-proxy-key': cleanApiKey(settings.apiKey),
       'x-proxy-type': settings.apiType,
     },
     body,
@@ -243,7 +248,7 @@ export async function callAIStream(
     headers: {
       'Content-Type': 'application/json',
       'x-proxy-target': targetUrl,
-      'x-proxy-key': settings.apiKey,
+      'x-proxy-key': cleanApiKey(settings.apiKey),
       'x-proxy-type': settings.apiType,
     },
     body,
@@ -591,7 +596,7 @@ export async function recognizeFoodImage(imageBase64: string): Promise<MealResul
     headers: {
       'Content-Type': 'application/json',
       'x-proxy-target': targetUrl,
-      'x-proxy-key': settings.apiKey,
+      'x-proxy-key': cleanApiKey(settings.apiKey),
       'x-proxy-type': settings.apiType,
     },
     body,
