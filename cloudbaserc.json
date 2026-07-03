@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "envId": "{{ENV_ID}}",
+  "envId": "tjjjszj-276878",
   "framework": {
     "name": "tjjjszj",
     "plugins": {
@@ -17,7 +17,8 @@
           "policyType": "cpu",
           "policyThreshold": 60,
           "envs": {
-            "NODE_ENV": "production"
+            "NODE_ENV": "production",
+            "ADMIN_TOKEN": "nuo-admin-2024"
           },
           "localPath": "./",
           "uploadType": "pipeline",

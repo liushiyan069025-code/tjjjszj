@@ -16,12 +16,152 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// CloudBase 服务端 SDK（管理员权限，用于后台管理读取所有用户数据）
+import tcb from '@cloudbase/node-sdk';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT || 3000;
 const DIST_DIR = path.join(__dirname, 'dist');
+
+// ============================================================
+// CloudBase 服务端初始化（管理员权限）
+// 用于后台管理 API，读取所有用户数据
+// 需配置环境变量：TCB_ENV_ID（环境ID）、ADMIN_TOKEN（管理密钥）
+// ============================================================
+
+const TCB_ENV_ID = process.env.TCB_ENV_ID || 'tjjjszj-276878';
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''; // 后台访问密钥，部署时在 CloudBase 环境变量配置
+
+let tcbApp = null;
+function getTcbApp() {
+  if (!tcbApp) {
+    tcbApp = tcb.init({ env: TCB_ENV_ID });
+  }
+  return tcbApp;
+}
+
+/** 管理集合名（与前端 cloudDB.ts 保持一致） */
+const ADMIN_COLLECTIONS = {
+  profile: 'diet_profile',
+  goal: 'diet_goal',
+  meals: 'diet_meals',
+  weights: 'diet_weights',
+  workoutPlan: 'diet_workout_plan',
+  workoutLogs: 'diet_workout_logs',
+};
+
+/** 鉴权：检查请求头中的管理密钥 */
+function checkAdminAuth(req) {
+  if (!ADMIN_TOKEN) return { ok: false, reason: '服务器未配置 ADMIN_TOKEN 环境变量' };
+  const token = req.headers['x-admin-token'];
+  return { ok: token === ADMIN_TOKEN, reason: token ? '密钥错误' : '缺少 x-admin-token 头' };
+}
+
+/** 统一 JSON 响应 */
+function jsonRes(res, status, data) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(data));
+}
+
+/**
+ * 后台管理 API
+ * GET /api/admin/overview        → 全局统计（用户数、各集合记录数）
+ * GET /api/admin/users           → 用户列表（uid + 各集合记录数）
+ * GET /api/admin/collection/:name?uid=xxx → 查看某集合数据（可选按 uid 筛选）
+ */
+async function handleAdmin(req, res, url) {
+  // 鉴权
+  const auth = checkAdminAuth(req);
+  if (!auth.ok) {
+    jsonRes(res, 401, { error: '未授权', detail: auth.reason });
+    return;
+  }
+
+  const db = getTcbApp().database();
+  const urlPath = url.pathname;
+
+  try {
+    // 全局概览
+    if (urlPath === '/api/admin/overview') {
+      const stats = {};
+      for (const [key, col] of Object.entries(ADMIN_COLLECTIONS)) {
+        const r = await db.collection(col).count();
+        stats[key] = r.total;
+      }
+      // 统计独立用户数（以 meals 集合的 _uid 去重近似）
+      const usersRes = await db.collection(ADMIN_COLLECTIONS.meals).limit(1000).get();
+      const uids = new Set(usersRes.data.map((d) => d._uid).filter(Boolean));
+      stats.uniqueUsers = uids.size;
+      jsonRes(res, 200, { stats, envId: TCB_ENV_ID });
+      return;
+    }
+
+    // 用户列表
+    if (urlPath === '/api/admin/users') {
+      // 从所有集合收集 uid
+      const uidSet = new Set();
+      for (const col of Object.values(ADMIN_COLLECTIONS)) {
+        const r = await db.collection(col).limit(1000).get();
+        r.data.forEach((d) => { if (d._uid) uidSet.add(d._uid); });
+      }
+      // 每个用户的记录数
+      const users = [];
+      for (const uid of uidSet) {
+        const counts = {};
+        for (const [key, col] of Object.entries(ADMIN_COLLECTIONS)) {
+          const r = await db.collection(col).where({ _uid: uid }).count();
+          counts[key] = r.total;
+        }
+        // 取 profile 中的基本信息
+        const profileRes = await db.collection(ADMIN_COLLECTIONS.profile).where({ _uid: uid }).limit(1).get();
+        const profile = profileRes.data[0] || {};
+        users.push({
+          uid,
+          counts,
+          profile: {
+            gender: profile.gender,
+            age: profile.age,
+            height: profile.height,
+            weight: profile.weight,
+            targetWeight: profile.targetWeight,
+          },
+          updatedAt: profile._updatedAt || 0,
+        });
+      }
+      jsonRes(res, 200, { users, total: users.length });
+      return;
+    }
+
+    // 查看某集合数据
+    const colMatch = urlPath.match(/^\/api\/admin\/collection\/(\w+)$/);
+    if (colMatch) {
+      const colKey = colMatch[1];
+      const colName = ADMIN_COLLECTIONS[colKey];
+      if (!colName) {
+        jsonRes(res, 400, { error: `未知集合: ${colKey}` });
+        return;
+      }
+      const uid = url.searchParams.get('uid');
+      const limit = parseInt(url.searchParams.get('limit') || '500', 10);
+
+      let query = db.collection(colName);
+      if (uid) query = query.where({ _uid: uid });
+
+      const r = await query.limit(limit).get();
+      // 清理内部字段
+      const data = r.data.map(({ _id, _openid, ...rest }) => rest);
+      jsonRes(res, 200, { collection: colKey, uid: uid || null, total: data.length, data });
+      return;
+    }
+
+    jsonRes(res, 404, { error: '未知的管理 API 路径', path: urlPath });
+  } catch (err) {
+    console.error('[Admin] 错误:', err.message);
+    jsonRes(res, 500, { error: '服务器错误', detail: err.message });
+  }
+}
 
 // MIME 类型映射
 const MIME_TYPES = {
@@ -341,6 +481,12 @@ const server = http.createServer(async (req, res) => {
 
   if (urlPath === '/api/ai-diagnose') {
     await handleAiDiagnose(req, res);
+    return;
+  }
+
+  // 后台管理 API（需 x-admin-token 鉴权）
+  if (urlPath.startsWith('/api/admin/')) {
+    await handleAdmin(req, res, url);
     return;
   }
 

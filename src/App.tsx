@@ -9,9 +9,10 @@ import { CartoonIcon } from './components/CartoonIcon';
 import { ProfileTab } from './pages/ProfileTab';
 import { TodayTab } from './pages/TodayTab';
 import { HistoryTab } from './pages/HistoryTab';
-import { useLocalStorage } from './hooks/useLocalStorage';
+import { useCloudSingle, useCloudList } from './hooks/useCloudData';
 import { useNotifications } from './hooks/useNotifications';
 import { getTodayStr } from './utils/calculations';
+import { COLLECTIONS } from './services/cloudDB';
 import type { IconName } from './constants/icons';
 import type { UserProfile, NutritionGoal, MealEntry, WeightEntry, WorkoutPlan, WorkoutLog } from './types';
 
@@ -35,13 +36,14 @@ const DEFAULT_PROFILE: UserProfile = {
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState('today'); // 今日干饭为首页
 
-  // 持久化数据
-  const [profile, setProfile] = useLocalStorage<UserProfile>('profile', DEFAULT_PROFILE);
-  const [goal, setGoal] = useLocalStorage<NutritionGoal | null>('goal', null);
-  const [meals, setMeals] = useLocalStorage<MealEntry[]>('meals', []);
-  const [weights, setWeights] = useLocalStorage<WeightEntry[]>('weights', []);
-  const [workoutPlan, setWorkoutPlan] = useLocalStorage<WorkoutPlan | null>('workoutPlan', null);
-  const [workoutLogs, setWorkoutLogs] = useLocalStorage<WorkoutLog[]>('workoutLogs', []);
+  // 持久化数据 —— 云端优先 + 本地降级 + 自动迁移
+  // 单文档类型用 useCloudSingle，列表类型用 useCloudList
+  const [profile, setProfile] = useCloudSingle<UserProfile>('profile', COLLECTIONS.profile, DEFAULT_PROFILE);
+  const [goal, setGoal] = useCloudSingle<NutritionGoal | null>('goal', COLLECTIONS.goal, null);
+  const [meals, mealsApi] = useCloudList<MealEntry>('meals', COLLECTIONS.meals, []);
+  const [weights, weightsApi] = useCloudList<WeightEntry>('weights', COLLECTIONS.weights, [], 'date');
+  const [workoutPlan, setWorkoutPlan] = useCloudSingle<WorkoutPlan | null>('workoutPlan', COLLECTIONS.workoutPlan, null);
+  const [workoutLogs, workoutLogsApi] = useCloudList<WorkoutLog>('workoutLogs', COLLECTIONS.workoutLogs, [], 'date');
 
   // 数据迁移：
   // 1) 无 days 字段的极旧格式 → 清除
@@ -68,12 +70,12 @@ const App: React.FC = () => {
     return workoutPlan;
   }, [workoutPlan]);
   const safeWorkoutLogs = safeWorkoutPlan ? workoutLogs : [];
-  // 若被迁移修改，同步写入 storage
+  // 若被迁移修改，同步写入云端
   useEffect(() => {
     if (!workoutPlan) return;
     if (!Array.isArray((workoutPlan as any).days)) {
       setWorkoutPlan(null);
-      setWorkoutLogs([]);
+      workoutLogsApi.update([]);
     } else if (!Array.isArray((workoutPlan as any).weeklySchedule)) {
       // 触发 safeWorkoutPlan 的计算结果写入
       setWorkoutPlan(safeWorkoutPlan);
@@ -100,31 +102,28 @@ const App: React.FC = () => {
   // 通知提醒
   useNotifications(profile.reminderTimes, goal, todayIntake);
 
-  // 添加餐食
+  // 添加餐食（云端 + 本地双写）
   const addMeal = (entry: MealEntry) => {
-    setMeals((prev) => [...prev, entry]);
+    mealsApi.add(entry);
   };
 
   // 删除餐食
   const deleteMeal = (id: string) => {
-    setMeals((prev) => prev.filter((m) => m.id !== id));
+    mealsApi.remove(id);
   };
 
-  // 添加体重
+  // 添加体重（同一天去重后全量替换）
   const addWeight = (entry: WeightEntry) => {
-    setWeights((prev) => {
-      // 同一天只保留最新一条
-      const filtered = prev.filter((w) => w.date !== entry.date);
-      return [...filtered, entry].sort((a, b) => a.date.localeCompare(b.date));
-    });
+    const filtered = weights.filter((w) => w.date !== entry.date);
+    const next = [...filtered, entry].sort((a, b) => a.date.localeCompare(b.date));
+    weightsApi.replaceAll(next);
   };
 
-  // 更新健身打卡（同一天覆盖）
+  // 更新健身打卡（同一天覆盖后全量替换）
   const updateWorkoutLog = (log: WorkoutLog) => {
-    setWorkoutLogs((prev) => {
-      const filtered = prev.filter((w) => w.date !== log.date);
-      return [...filtered, log];
-    });
+    const filtered = workoutLogs.filter((w) => w.date !== log.date);
+    const next = [...filtered, log];
+    workoutLogsApi.update(next);
   };
 
   const tabs: NavTab[] = [

@@ -40,8 +40,9 @@ function validateApiSettings(settings: AppSettings): void {
   }
   if (looksLikeApiKey(baseUrl)) {
     throw new Error(
-      '「API 地址」不能填 Token（sk-...）。\n' +
-      '公司网关：Key 填 API Key 框，网关根地址（https://...）填 API 地址框。'
+      '「API 地址」不能填 API Key（sk-ws-...）。\n' +
+      'Key 填上面「API Key」框；地址填百炼 OpenAI 兼容地址：\n' +
+      'https://ws-9skcdg9grkpu60hf.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
     );
   }
   if (/^https?:\/\//i.test(apiKey) || apiKey.includes('maas.aliyuncs.com') || apiKey.includes('dashscope')) {
@@ -62,41 +63,51 @@ function buildStandardOpenAIUrl(baseUrl: string): string {
   return `${url}/v1/chat/completions`;
 }
 
+/** 是否百炼 OpenAI 兼容端点（业务空间 maas / 公共 dashscope） */
+function isBailianOpenAIEndpoint(baseUrl: string): boolean {
+  return baseUrl.includes('maas.aliyuncs.com') || baseUrl.includes('dashscope.aliyuncs.com');
+}
+
 /** 构建目标 URL */
 function buildTargetUrl(settings: AppSettings): string {
   validateApiSettings(settings);
 
   let baseUrl = settings.baseUrl.trim().replace(/\/+$/, '');
-  const gatewayMode: GatewayMode = settings.gatewayMode ?? 'standard';
 
   // 仅对域名类地址补全 https://；禁止把 sk- Key 当成 URL
   if (!/^https?:\/\//i.test(baseUrl)) {
     if (looksLikeApiKey(baseUrl)) {
-      throw new Error('API 地址不能是 API Key，请填公司网关 https://... 根路径');
+      throw new Error('API 地址不能是 API Key，请填百炼 OpenAI 兼容地址 .../compatible-mode/v1');
     }
     baseUrl = `https://${baseUrl}`;
   }
 
-  // 完整 chat 端点（IT 文档给出全路径时）
-  if (gatewayMode === 'full' || /\/chat\/completions\/?$/i.test(baseUrl)) {
+  // 完整 chat 端点
+  if (settings.gatewayMode === 'full' || /\/chat\/completions\/?$/i.test(baseUrl)) {
     console.log('[AI] 请求目标 URL:', baseUrl, '| gatewayMode: full');
     return baseUrl;
   }
 
-  // 公司标准 OpenAI 网关（申通 devops-llmgateway 等）
-  if (gatewayMode === 'standard') {
+  const useDashscope =
+    settings.gatewayMode === 'dashscope' || isBailianOpenAIEndpoint(baseUrl);
+
+  // 非百炼：标准 OpenAI 网关
+  if (!useDashscope) {
     const targetUrl = buildStandardOpenAIUrl(baseUrl);
     console.log('[AI] 请求目标 URL:', targetUrl, '| gatewayMode: standard');
     return targetUrl;
   }
 
-  // 百炼 / DashScope compatible-mode
-  const isDashScope = baseUrl.includes('dashscope.aliyuncs.com');
-  const isWorkspaceMaas = baseUrl.includes('maas.aliyuncs.com');
+  // 百炼业务空间：仅填域名时补全 compatible-mode/v1
+  if (baseUrl.includes('maas.aliyuncs.com') && !baseUrl.includes('compatible-mode')) {
+    baseUrl = `${baseUrl}/compatible-mode/v1`;
+    console.warn('[AI] 百炼业务空间 baseUrl 已补全 OpenAI 兼容路径:', baseUrl);
+  }
 
-  if (isDashScope && !baseUrl.includes('compatible-mode')) {
+  // 百炼公共 DashScope：补全 compatible-mode
+  if (baseUrl.includes('dashscope.aliyuncs.com') && !baseUrl.includes('compatible-mode')) {
     baseUrl = `${baseUrl}/compatible-mode`;
-    console.warn('[AI] 检测到 DashScope baseUrl 缺少 /compatible-mode 路径，已自动补全:', baseUrl);
+    console.warn('[AI] DashScope baseUrl 已补全 /compatible-mode:', baseUrl);
   }
 
   let targetUrl: string;

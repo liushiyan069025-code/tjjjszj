@@ -11,7 +11,8 @@ WORKDIR /app
 # 先复制依赖清单，利用 Docker 缓存层
 COPY package.json package-lock.json* ./
 
-RUN npm ci
+# 安装依赖：优先 npm ci，失败则降级 npm install（容错）
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 
 # 复制源码并构建
 COPY . .
@@ -25,7 +26,10 @@ WORKDIR /app
 
 # 只复制运行所需文件
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
+
+# 安装生产依赖：server.js 运行时不需要额外依赖，
+# 但保留 node_modules 以备 server.js 将来使用 npm 包
+RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
 
 # 复制服务器和构建产物
 COPY server.js ./
@@ -37,8 +41,8 @@ ENV NODE_ENV=production
 
 EXPOSE 80
 
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# 健康检查：start-period 延长到 40s，给冷启动足够时间
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://localhost:80/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server.js"]

@@ -233,15 +233,22 @@ export interface AppSettings {
   authStyle?: AuthStyle;
 }
 
-/** 默认设置（阿里云百炼 DashScope，国内可直接访问，无需翻墙） */
+/** 百炼业务空间 OpenAI 兼容地址（控制台「保存 API Key」弹窗里复制） */
+export const BAILIAN_WORKSPACE_OPENAI_URL =
+  'https://ws-9skcdg9grkpu60hf.cn-beijing.maas.aliyuncs.com/compatible-mode/v1';
+
+/** 百炼公共 DashScope OpenAI 兼容地址 */
+export const BAILIAN_PUBLIC_OPENAI_URL = 'https://dashscope.aliyuncs.com/compatible-mode';
+
+/** 默认设置（阿里云百炼业务空间 OpenAI 兼容） */
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: '',
   baseUrl:
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_GATEWAY_URL) ||
-    'https://dashscope.aliyuncs.com/compatible-mode',
+    BAILIAN_WORKSPACE_OPENAI_URL,
   model:
     (typeof import.meta !== 'undefined' && import.meta.env?.VITE_DEFAULT_MODEL) ||
-    'qwen-vl-max',
+    'qwen3.5-omni-flash',
   apiType: 'openai',
   gatewayMode: 'dashscope',
   authStyle: 'bearer',
@@ -298,19 +305,21 @@ export function repairSettings(raw: Partial<AppSettings>): { settings: AppSettin
     settings.baseUrl = DEFAULT_SETTINGS.baseUrl;
     repaired.push(
       '已自动纠正：Token 不应放在「API 地址」。\n' +
-      '请在「API 地址」填写公司网关根地址（https://...），然后点「保存设置」。'
+      '请在「API 地址」填写百炼 OpenAI 兼容地址（.../compatible-mode/v1），然后点「保存设置」。'
     );
     return { settings, repaired };
   }
 
-  // 申通网关：应保留 compatible-mode（/v1 会 404，误删后 /v1 会 405）
-  if (baseUrl.includes('devops-llmgateway.sto.cn')) {
-    if (!/compatible-mode/i.test(baseUrl)) {
-      settings.baseUrl = 'https://devops-llmgateway.sto.cn/compatible-mode/v1';
-    }
+  // 百炼业务空间：补全 OpenAI 兼容路径（勿用 /api/v1，那个是 DashScope 原生协议）
+  if (baseUrl.includes('maas.aliyuncs.com')) {
     settings.gatewayMode = 'dashscope';
-    if (!/compatible-mode/i.test(String(raw.baseUrl ?? ''))) {
-      repaired.push('申通网关需使用 compatible-mode 路径，已改为 .../compatible-mode/v1');
+    if (!/compatible-mode/i.test(baseUrl)) {
+      const host = baseUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '').split('/')[0];
+      settings.baseUrl = `https://${host}/compatible-mode/v1`;
+      repaired.push('百炼业务空间请用 OpenAI 兼容地址（.../compatible-mode/v1），已自动补全');
+    } else if (baseUrl.endsWith('/compatible-mode')) {
+      settings.baseUrl = `${baseUrl.replace(/\/+$/, '')}/v1`;
+      repaired.push('百炼地址已补全为 .../compatible-mode/v1');
     }
   }
 

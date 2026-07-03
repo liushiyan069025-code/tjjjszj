@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import type { UserProfile, NutritionGoal, ActivityLevel, AppSettings, ApiType, GatewayMode, AuthStyle, WorkoutPlan, TrainingStyle, SplitType, WorkoutDay, Exercise } from '../types';
-import { ACTIVITY_FACTORS, DEFAULT_SETTINGS, loadSettingsWithRepairNotice, saveSettings, looksLikeApiKey, TRAINING_STYLES, SPLIT_TYPES, WEEKDAY_LABELS } from '../types';
+import { ACTIVITY_FACTORS, DEFAULT_SETTINGS, BAILIAN_WORKSPACE_OPENAI_URL, BAILIAN_PUBLIC_OPENAI_URL, loadSettingsWithRepairNotice, saveSettings, looksLikeApiKey, TRAINING_STYLES, SPLIT_TYPES, WEEKDAY_LABELS } from '../types';
 import { calcBMI, calcBMR, calcTDEE, daysUntilTarget, genId, calcDayTotalCalories, calcDayStrengthCalories, calcCardioCalories, calcDayDuration } from '../utils/calculations';
 import { generateNutritionGoal, generateWorkoutPlan, diagnoseConnection } from '../services/aiService';
 import { CartoonIcon, SectionHeading } from '../components/CartoonIcon';
@@ -17,9 +17,9 @@ const API_TYPE_OPTIONS: { value: ApiType; label: string; desc: string }[] = [
 ];
 
 const GATEWAY_MODE_OPTIONS: { value: GatewayMode; label: string; desc: string }[] = [
-  { value: 'dashscope', label: '百炼 compatible-mode', desc: '申通 devops-llmgateway / 阿里云百炼（推荐）' },
-  { value: 'standard', label: '标准 OpenAI', desc: '普通 /v1/chat/completions 网关' },
-  { value: 'full', label: '完整 URL', desc: 'IT 给了含 chat/completions 的全路径' },
+  { value: 'dashscope', label: '百炼 compatible-mode', desc: '业务空间 / 公共 DashScope（推荐）' },
+  { value: 'standard', label: '标准 OpenAI', desc: '其他第三方 /v1/chat/completions 网关' },
+  { value: 'full', label: '完整 URL', desc: '粘贴含 chat/completions 的完整地址' },
 ];
 
 interface ProfileTabProps {
@@ -66,10 +66,9 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
     };
     if (looksLikeApiKey(normalized.baseUrl)) {
       throw new Error(
-        '「API 地址」不能填 Token！\n' +
-        '• API Key：填公司网关给的 sk-...\n' +
-        '• API 地址：填公司网关根地址，如 https://ai-gateway.xxx.com 或 .../v1\n' +
-        '（你现在地址框里是 Key，所以会报 Failed to parse URL from sk-...）'
+        '「API 地址」不能填 API Key！\n' +
+        'Key 填「API Key」框；地址填百炼 OpenAI 兼容地址：\n' +
+        'https://ws-9skcdg9grkpu60hf.cn-beijing.maas.aliyuncs.com/compatible-mode/v1'
       );
     }
     if (/^https?:\/\//i.test(normalized.apiKey) || normalized.apiKey.includes('maas.aliyuncs.com')) {
@@ -153,6 +152,38 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
     } finally {
       setDiagnoseLoading(false);
     }
+  };
+
+  /** 一键填入百炼业务空间（控制台弹窗里的 OpenAI 兼容地址） */
+  const handleApplyBailianWorkspace = () => {
+    setSettingsError('');
+    const next: AppSettings = {
+      ...settings,
+      apiType: 'openai',
+      gatewayMode: 'dashscope',
+      authStyle: 'bearer',
+      baseUrl: BAILIAN_WORKSPACE_OPENAI_URL,
+      model: settings.model.trim() || 'qwen3.5-omni-flash',
+    };
+    setSettings(next);
+    saveSettings(next);
+    setSettingsError('已填入百炼业务空间地址，请粘贴 API Key（sk-ws-...）后点「保存设置」。');
+  };
+
+  /** 百炼公共 DashScope（非业务空间 Key 时用） */
+  const handleApplyBailianPublic = () => {
+    setSettingsError('');
+    const next: AppSettings = {
+      ...settings,
+      apiType: 'openai',
+      gatewayMode: 'dashscope',
+      authStyle: 'bearer',
+      baseUrl: BAILIAN_PUBLIC_OPENAI_URL,
+      model: settings.model.trim() || 'qwen-vl-max',
+    };
+    setSettings(next);
+    saveSettings(next);
+    setSettingsError('已填入公共 DashScope 地址，请用 dashscope 控制台 API Key。');
   };
 
   const bmi = calcBMI(profile.weight, profile.height);
@@ -869,7 +900,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
                   type="button"
                   onClick={() => setSettings((prev) => ({ ...prev, gatewayMode: opt.value }))}
                   className={`text-left p-2.5 rounded-xl border-2 transition-all ${
-                    (settings.gatewayMode ?? 'standard') === opt.value
+                    (settings.gatewayMode ?? 'dashscope') === opt.value
                       ? 'border-primary-500 bg-primary-500/10'
                       : 'border-gray-600 hover:border-primary-500/50'
                   }`}
@@ -920,7 +951,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             value={settings.baseUrl}
             onChange={(e) => setSettings((prev) => ({ ...prev, baseUrl: e.target.value }))}
             className="input-field mt-1"
-            placeholder={settings.apiType === 'openai' ? 'https://devops-llmgateway.sto.cn/compatible-mode/v1' : 'https://api.anthropic.com'}
+              placeholder={settings.apiType === 'openai' ? 'https://ws-xxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1' : 'https://api.anthropic.com'}
           />
           {looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-red-400 mt-1 leading-relaxed">
@@ -929,7 +960,7 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
           )}
           {settings.apiType === 'openai' && !looksLikeApiKey(settings.baseUrl) && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              <span className="text-gray-400">申通 LLM 网关</span>：选「百炼 compatible-mode」，地址 <span className="text-gray-400">https://devops-llmgateway.sto.cn/compatible-mode/v1</span>。404 说明不要用 /v1；405 时点「探测可用路径」。
+              <span className="text-gray-400">百炼业务空间</span>：用控制台弹窗里的 <span className="text-gray-400">OpenAI 兼容地址</span>（含 <span className="text-gray-400">/compatible-mode/v1</span>），不要用 DashScope 原生 <span className="text-gray-400">/api/v1</span>。
             </p>
           )}
         </div>
@@ -965,14 +996,34 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({ profile, setProfile, goa
             value={settings.model}
             onChange={(e) => setSettings((prev) => ({ ...prev, model: e.target.value }))}
             className="input-field mt-1"
-            placeholder="qwen-vl-max / deepseek-chat / glm-4v"
+            placeholder="qwen3.5-omni-flash / qwen-vl-max"
           />
           {settings.apiType === 'openai' && (
             <p className="text-[10px] text-gray-500 mt-1 leading-relaxed">
-              阿里云百炼：业务空间用控制台模型 id（如 <span className="text-gray-400">qwen3.5-omni-flash</span>，小写）；识图还可选 <span className="text-gray-400">qwen-vl-max</span>。DeepSeek：<span className="text-gray-400">deepseek-chat</span>
+              业务空间：控制台模型 id（如 <span className="text-gray-400">qwen3.5-omni-flash</span>，小写，支持识图）。公共 DashScope：<span className="text-gray-400">qwen-vl-max</span>
             </p>
           )}
         </div>
+
+        {/* 百炼快捷配置 */}
+        {settings.apiType === 'openai' && (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleApplyBailianWorkspace}
+              className="px-3 py-2 rounded-xl border border-primary-500/50 text-primary-400 text-xs hover:bg-primary-500/10 transition-colors"
+            >
+              填入百炼业务空间
+            </button>
+            <button
+              type="button"
+              onClick={handleApplyBailianPublic}
+              className="px-3 py-2 rounded-xl border border-gray-600 text-gray-400 text-xs hover:bg-gray-700 transition-colors"
+            >
+              公共 DashScope
+            </button>
+          </div>
+        )}
 
         {/* 操作按钮 */}
         <div className="flex gap-2">
